@@ -44,17 +44,20 @@ function playersIn(channel) {
 
 async function openSession({ code, role, name, mapId, playerId, onState, onPlayers, onStart }) {
   if (!supabase) throw new Error('Online rooms need the Supabase URL and publishable key to be configured.');
+  let resolveInitialSync;
+  const initialSync = new Promise((resolve) => { resolveInitialSync = resolve; });
   const channel = supabase.channel(`race-${code}`, {
     config: { broadcast: { self: false, ack: false }, presence: { key: playerId } },
   });
   channel
     .on('broadcast', { event: 'race-state' }, ({ payload }) => onState?.(payload))
     .on('broadcast', { event: 'race-start' }, ({ payload }) => onStart?.(payload))
-    .on('presence', { event: 'sync' }, () => onPlayers?.(playersIn(channel)))
+    .on('presence', { event: 'sync' }, () => { resolveInitialSync(); onPlayers?.(playersIn(channel)); })
     .on('presence', { event: 'join' }, () => onPlayers?.(playersIn(channel)))
     .on('presence', { event: 'leave' }, () => onPlayers?.(playersIn(channel)));
   try {
     await subscribe(channel);
+    await Promise.race([initialSync, new Promise((resolve) => setTimeout(resolve, 3000))]);
     const existing = playersIn(channel);
     if (role === 'guest' && !existing.some((player) => player.role === 'host')) {
       throw new Error('That room is not open. Check the code or ask the host to create a new room.');
