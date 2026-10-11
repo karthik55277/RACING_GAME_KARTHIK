@@ -256,3 +256,24 @@ body:has(.racing-game) #root > div { min-height: 0 !important; }
   .rc-footer span:nth-child(2) { display: none; }
   .rc-footer { font-size: 7px; }
 }
+.rc-mode-picker { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.rc-online-lobby { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid rgba(91,222,243,.32); background: rgba(7,15,25,.78); }
+.rc-online-name { display: grid; gap: 5px; color: #bdc8d2; font: 7px 'DM Mono',monospace; letter-spacing: .1em; }
+.rc-online-name input,.rc-online-join input { min-width: 0; box-sizing: border-box; padding: 9px 10px; border: 1px solid rgba(255,255,255,.2); outline: none; background: rgba(3,9,16,.7); color: #fff; font: 9px 'DM Mono',monospace; letter-spacing: .08em; }
+.rc-online-name input:focus,.rc-online-join input:focus { border-color: #50e5f3; }
+.rc-online-action { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border: 0; background: linear-gradient(90deg,#30dfe9,#79f0d4); color: #10282d; font: 800 9px 'DM Mono',monospace; letter-spacing: .08em; cursor: pointer; }
+.rc-online-action:disabled,.rc-online-join button:disabled { opacity: .42; cursor: not-allowed; }
+.rc-online-join { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.rc-online-join button { padding: 0 13px; border: 1px solid rgba(255,190,66,.55); background: rgba(255,190,66,.12); color: #ffd783; font: 800 8px 'DM Mono',monospace; cursor: pointer; }
+.rc-online-note { color: #b8c6ce; font: 7px/1.6 'DM Mono',monospace; letter-spacing: .04em; }
+.rc-room-code { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; padding: 8px 10px; border: 1px solid rgba(255,190,66,.48); background: rgba(76,49,12,.24); }
+.rc-room-code span { color: #c8c2b5; font: 7px 'DM Mono',monospace; letter-spacing: .12em; }
+.rc-room-code b { grid-column: 1; color: #ffcf69; font: 900 23px 'DM Mono',monospace; letter-spacing: .18em; }
+.rc-room-code button { grid-column: 2; grid-row: 1/3; padding: 6px 8px; border: 1px solid rgba(255,255,255,.28); background: rgba(255,255,255,.06); color: #fff; font: 7px 'DM Mono',monospace; cursor: pointer; }
+.rc-room-players { display: grid; gap: 4px; }
+.rc-room-players>div { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 6px; color: #e6e8ea; font: 7px 'DM Mono',monospace; }
+.rc-room-players i { width: 6px; height: 6px; border-radius: 50%; background: #92999f; }
+.rc-room-players i.rc-player-ready { background: #77e8a4; box-shadow: 0 0 8px #77e8a4; }
+.rc-room-players b { color: #7ceba3; font-size: 6px; }
+.rc-online-leave { justify-self: start; padding: 3px 0; border: 0; background: transparent; color: #e59183; font: 7px 'DM Mono',monospace; cursor: pointer; }
+@media (max-width: 760px) { .rc-mode-picker { grid-template-columns: 1fr; } .rc-online-lobby { gap: 6px; padding: 8px; } }

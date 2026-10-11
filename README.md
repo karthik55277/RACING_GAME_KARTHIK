@@ -41,3 +41,9 @@ Alternatively, import the project into Vercel from a Git repository and set this
 Drive with W/A/S/D or the arrow keys. Press P or Escape to pause.
 
 Drive with W/A/S/D or the arrow keys. Press P or Escape to pause.
+
+## Online multiplayer
+
+Online races use Supabase Realtime Broadcast and Presence. Create a Supabase project with Realtime enabled, then set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` from `.env.example` in your local environment and in the Vercel project's Environment Variables. These are public browser values; never use a Supabase secret or service-role key here.
+
+Drivers create a seven-character room code, share it with one friend, then both ready up before the host starts a three-lap race. Solo and same-device split-screen remain available. Race positions are sent over Realtime Broadcast; Presence handles room membership and ready status.

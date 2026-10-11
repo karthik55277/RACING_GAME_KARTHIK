@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import './RacingGame.css';
+import { createRaceRoom, joinRaceRoom, makePlayerId, normalizeRoomCode, onlineConfigured } from './online';
 
 const TAU = Math.PI * 2;
 const MAPS = [
@@ -252,6 +253,11 @@ export default function RacingGame() {
   const gameRef = useRef(null);
   const setupStepRef = useRef(0);
   const setupActionAtRef = useRef(0);
+  const roomRef = useRef(null);
+  const playerIdRef = useRef(null);
+  if (!playerIdRef.current) playerIdRef.current = makePlayerId();
+  const remoteStateRef = useRef(null);
+  const lastRoomSendRef = useRef(0);
   const [speed, setSpeed] = useState(0);
   const [lap, setLap] = useState(1);
   const [time, setTime] = useState('00:00.00');
@@ -269,6 +275,13 @@ export default function RacingGame() {
   const [setupStep, setSetupStep] = useState(0);
   const [raceMode, setRaceMode] = useState('duo');
   const raceModeRef = useRef('duo');
+  const [room, setRoom] = useState(null);
+  const [roomName, setRoomName] = useState('');
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const [onlineMessage, setOnlineMessage] = useState('');
+  const [onlineBusy, setOnlineBusy] = useState(false);
+  const [onlineReady, setOnlineReady] = useState(false);
   const [place2, setPlace2] = useState(2);
   const [raceSnapshot, setRaceSnapshot] = useState([]);
   const [speed2, setSpeed2] = useState(0);
@@ -283,13 +296,56 @@ export default function RacingGame() {
     setupStepRef.current = step;
     setSetupStep(step);
   };
-  const selectRaceMode = (mode) => { raceModeRef.current = mode; setRaceMode(mode); };
+  const roomCallbacks = () => ({
+    onState: (packet) => { if (packet?.playerId && packet.playerId !== playerIdRef.current && Number.isFinite(packet.angle)) remoteStateRef.current = { ...packet, angle: ((packet.angle % TAU) + TAU) % TAU, lane: THREE.MathUtils.clamp(Number(packet.lane) || 0, -8.4, 8.4), speed: THREE.MathUtils.clamp(Number(packet.speed) || 0, 0, 75), lap: THREE.MathUtils.clamp(Math.floor(Number(packet.lap) || 1), 1, 3), receivedAt: Date.now() }; },
+    onPlayers: (players) => {
+      setOnlinePlayers(players);
+      const host = players.find((player) => player.role === 'host');
+      if (raceModeRef.current === 'online' && host?.mapId) setSelectedMap(host.mapId);
+    },
+    onStart: (payload) => {
+      if (payload?.hostId === playerIdRef.current) return;
+      if (payload?.mapId) setSelectedMap(payload.mapId);
+      const startAt = payload?.startAt || Date.now() + 2500;
+      setOnlineMessage('RACE STARTING');
+      window.setTimeout(() => gameRef.current?.start(startAt), Math.max(0, startAt - Date.now()));
+    },
+  });
+  const connectRoom = async (role) => {
+    setOnlineBusy(true); setOnlineMessage('CONNECTING TO RACE NETWORK…');
+    try {
+      const callbacks = roomCallbacks();
+      const session = role === 'host'
+        ? await createRaceRoom({ name: roomName, mapId: selectedMap, playerId: playerIdRef.current, ...callbacks })
+        : await joinRaceRoom({ code: roomCodeInput, name: roomName, playerId: playerIdRef.current, ...callbacks });
+      roomRef.current = session;
+      setRoom({ code: session.code, role: session.role });
+      setOnlineReady(session.role === 'host');
+      setOnlineMessage(session.role === 'host' ? 'SHARE THE CODE WITH A FRIEND' : 'YOU’RE IN. READY UP WHEN SET.');
+    } catch (error) {
+      setOnlineMessage(error?.message || 'Could not connect. Please try again.');
+    } finally { setOnlineBusy(false); }
+  };
+  const leaveRoom = async () => {
+    const session = roomRef.current; roomRef.current = null; remoteStateRef.current = null;
+    if (session) await session.close();
+    setRoom(null); setOnlinePlayers([]); setOnlineReady(false); setOnlineMessage('');
+  };
+  const startOnlineRace = async () => {
+    if (!roomRef.current || roomRef.current.role !== 'host' || onlinePlayers.length < 2 || onlinePlayers.some((player) => !player.ready)) return;
+    const startAt = Date.now() + 3000;
+    await roomRef.current.sendStart(startAt, selectedMap);
+    setOnlineMessage('RACE STARTING');
+    gameRef.current?.start(startAt);
+  };
+  const selectRaceMode = (mode) => { if (raceModeRef.current === 'online' && mode !== 'online' && roomRef.current) void leaveRoom(); raceModeRef.current = mode; setRaceMode(mode); setOnlineMessage(''); };
+  useEffect(() => () => { roomRef.current?.close(); }, []);
   const selectedTrack = MAPS.find((item) => item.id === selectedMap) || MAPS[0];
   const sampledCourse = Array.from({ length: 128 }, (_, index) => trackPoint(index / 128 * TAU, selectedTrack));
   const courseBounds = sampledCourse.reduce((bounds, point) => ({ minX: Math.min(bounds.minX, point.x), maxX: Math.max(bounds.maxX, point.x), minZ: Math.min(bounds.minZ, point.z), maxZ: Math.max(bounds.maxZ, point.z) }), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
   const mapCoordinates = (angle) => { const point = trackPoint(angle, selectedTrack); return { x: 8 + (point.x - courseBounds.minX) / (courseBounds.maxX - courseBounds.minX) * 84, y: 8 + (point.z - courseBounds.minZ) / (courseBounds.maxZ - courseBounds.minZ) * 52 }; };
   const mapRoutePath = `${sampledCourse.map((point, index) => `${index ? 'L' : 'M'} ${8 + (point.x - courseBounds.minX) / (courseBounds.maxX - courseBounds.minX) * 84} ${8 + (point.z - courseBounds.minZ) / (courseBounds.maxZ - courseBounds.minZ) * 52}`).join(' ')} Z`;
-  const fieldSize = raceMode === 'duo' ? 7 : 6;
+  const fieldSize = raceMode === 'online' || raceMode === 'duo' ? 7 : 6;
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -324,6 +380,7 @@ export default function RacingGame() {
     const startFrame1 = trackFrame(0, -1.7, track), startFrame2 = trackFrame(0, 1.7, track);
     player.position.set(startFrame1.x, 0.05, startFrame1.z); player.rotation.y = Math.atan2(-startFrame1.tx, -startFrame1.tz);
     const player2 = makeCar('#3f9aff', true); scene.add(player2);
+    const remoteCar = makeCar('#58a9ff', true); scene.add(remoteCar); remoteCar.visible = false;
     player2.position.set(startFrame2.x, 0.05, startFrame2.z); player2.rotation.y = Math.atan2(-startFrame2.tx, -startFrame2.tz);
     camera.position.set(startFrame1.x - startFrame1.tx * 22, 3.8, startFrame1.z - startFrame1.tz * 22); camera.fov = 58; camera.updateProjectionMatrix();
     camera.lookAt(startFrame1.x + startFrame1.tx * 30, 0.7, startFrame1.z + startFrame1.tz * 30);
@@ -388,7 +445,7 @@ export default function RacingGame() {
       if ((e.key.toLowerCase() === 'p' || e.key === 'Escape') && !state.finished) { state.paused = !state.paused; setPaused(state.paused); }
       if (e.key === 'Enter' && !state.started) {
         if (setupStepRef.current < 2) goToSetupStep(setupStepRef.current + 1);
-        else { state.started = true; setStarted(true); }
+        else if (raceModeRef.current !== 'online') { state.started = true; setStarted(true); }
       }
     };
     const onUp = (e) => { if (e.key === 'Shift') keys.delete(e.code.toLowerCase()); else keys.delete(e.key.toLowerCase()); };
@@ -397,7 +454,7 @@ export default function RacingGame() {
     const animate = (now) => {
       frame = requestAnimationFrame(animate);
       const dt = Math.min((now - previous) / 1000, 0.05); previous = now;
-      const active = state.started && !state.paused;
+      const active = state.started && !state.paused && (!state.startAt || Date.now() >= state.startAt);
       if (active) {
         state.elapsed += dt;
         const throttle = keys.has('w');
@@ -432,7 +489,7 @@ export default function RacingGame() {
           state.angle -= TAU; state.lap += 1;
           const lapTime = state.elapsed - state.lastLap; state.lastLap = state.elapsed;
           setBest((b) => b === '--:--.--' || lapTime < parseTime(b) ? formatTime(lapTime) : b);
-          if (state.lap > 3) { state.lap = 3; state.paused = true; state.finished = true; state.velocity = 0; setFinished(true); setPaused(true); setWinner('PLAYER 1 WINS'); }
+          if (state.lap > 3) { state.lap = 3; state.paused = true; state.finished = true; state.velocity = 0; setFinished(true); setPaused(true); setWinner(raceModeRef.current === 'online' ? (place <= 2 ? 'YOU WIN' : 'RACE COMPLETE') : 'PLAYER 1 WINS'); }
           setLap(state.lap);
         }
         state.offroad = Math.abs(state.lane) > roadWidth * 0.42;
@@ -476,8 +533,10 @@ export default function RacingGame() {
         camera2.lookAt(player2.position.clone().add(new THREE.Vector3(tangent2.x * 11, 1.35, tangent2.z * 11)));
         }
         const playerProgress = (state.lap - 1) * lapLength + trackMetrics.distanceAt(state.angle);
-        const playerProgress2 = state2.raceLaps * lapLength + trackMetrics.distanceAt(state2.angle);
-        const racers = [...rivals.map((rival) => ({ angle: rival.angle, lane: rival.lane, speed: rival.speed, rival })), { angle: state.angle, lane: state.lane, speed: state.velocity, rival: null, playerId: 1 }, ...(raceModeRef.current === 'duo' ? [{ angle: state2.angle, lane: state2.lane, speed: state2.velocity, rival: null, playerId: 2 }] : [])];
+        const remoteRaceProgress = remoteStateRef.current ? (Math.max(1, remoteStateRef.current.lap || 1) - 1) * lapLength + trackMetrics.distanceAt(remoteStateRef.current.angle || 0) : 0;
+        const playerProgress2 = raceModeRef.current === 'online' ? remoteRaceProgress : state2.raceLaps * lapLength + trackMetrics.distanceAt(state2.angle);
+        const remote = remoteStateRef.current;
+        const racers = [...rivals.map((rival) => ({ angle: rival.angle, lane: rival.lane, speed: rival.speed, rival })), { angle: state.angle, lane: state.lane, speed: state.velocity, rival: null, playerId: 1 }, ...(raceModeRef.current === 'duo' ? [{ angle: state2.angle, lane: state2.lane, speed: state2.velocity, rival: null, playerId: 2 }] : raceModeRef.current === 'online' && remote ? [{ angle: remote.angle, lane: remote.lane, speed: remote.speed, rival: null, playerId: 2 }] : [])];
         for (const rival of rivals) {
           const rivalRadius = trackFrame(rival.angle, 0, track).radius;
           let closestGap = Infinity, closestSpeed = rival.speed;
@@ -633,12 +692,29 @@ export default function RacingGame() {
           const standings = [
             ...rivals.map((rival, index) => ({ id: `r${index + 1}`, label: `RIVAL ${String(index + 1).padStart(2, '0')}`, shortLabel: `R${index + 1}`, color: rivalColors[index], angle: rival.angle, progress: rival.raceLaps * lapLength + trackMetrics.distanceAt(rival.angle) })),
             { id: 'p1', label: 'PLAYER 1', shortLabel: 'P1', color: '#ff654e', angle: state.angle, progress: (state.lap - 1) * lapLength + trackMetrics.distanceAt(state.angle) },
-            ...(raceModeRef.current === 'duo' ? [{ id: 'p2', label: 'PLAYER 2', shortLabel: 'P2', color: '#58a9ff', angle: state2.angle, progress: state2.raceLaps * lapLength + trackMetrics.distanceAt(state2.angle) }] : []),
+            ...(raceModeRef.current === 'duo' ? [{ id: 'p2', label: 'PLAYER 2', shortLabel: 'P2', color: '#58a9ff', angle: state2.angle, progress: state2.raceLaps * lapLength + trackMetrics.distanceAt(state2.angle) }] : raceModeRef.current === 'online' && remoteStateRef.current ? [{ id: 'p2', label: remoteStateRef.current.name || 'ONLINE RIVAL', shortLabel: 'P2', color: '#58a9ff', angle: remoteStateRef.current.angle || 0, progress: remoteRaceProgress }] : []),
           ].sort((a, b) => b.progress - a.progress).map((racer, index) => ({ ...racer, place: index + 1, percent: THREE.MathUtils.clamp(racer.progress / raceLength, 0, 1) * 100 }));
           setRaceSnapshot(standings); setPowerupToast(state.powerupToastTimer > 0 ? state.powerupToast : '');
-          setSpeed(Math.round(state.velocity * 3.6)); setSpeed2(Math.round(state2.velocity * 3.6)); setLap2(state2.lap); setPlace(currentPlace); setPlace2(currentPlace2); setTime(formatTime(state.elapsed)); setPaused(state.paused); setNitro(state.nitro); setNitro2(state2.nitro); setDriftScore(state.driftScore); setAirborne(state.airtime > 0); setTakeDowns(state.takeDowns); setTakeDownVisible(state.elapsed - state.lastTakeDown < 1.4);
+          if (raceModeRef.current === 'online' && roomRef.current) {
+            roomRef.current.sendState({ angle: state.angle, lane: state.lane, speed: state.velocity, nitro: state.nitro, lap: state.lap, elapsed: state.elapsed, boosting: keys.has('shiftleft') && state.nitro > 0, finished: state.finished, track: selectedMap });
+          }
+          setSpeed(Math.round(state.velocity * 3.6)); setSpeed2(Math.round(state2.velocity * 3.6)); setLap2(state2.lap); setPlace(standings.find((racer) => racer.id === 'p1')?.place || currentPlace); setPlace2(raceModeRef.current === 'online' ? (standings.find((racer) => racer.id === 'p2')?.place || 2) : currentPlace2); setTime(formatTime(state.elapsed)); setPaused(state.paused); setNitro(state.nitro); setNitro2(state2.nitro); setDriftScore(state.driftScore); setAirborne(state.airtime > 0); setTakeDowns(state.takeDowns); setTakeDownVisible(state.elapsed - state.lastTakeDown < 1.4);
         }
       }
+      if (raceModeRef.current === 'online') {
+        const remote = remoteStateRef.current;
+        remoteCar.visible = Boolean(remote && Date.now() - (remote.receivedAt || 0) < 3500);
+        if (remoteCar.visible) {
+          const angle = Number.isFinite(remote.angle) ? remote.angle : 0;
+          const lane = Number.isFinite(remote.lane) ? remote.lane : 1.7;
+          const remoteFrame = trackFrame(angle, lane, track);
+          const position = new THREE.Vector3(remoteFrame.x, 0.05, remoteFrame.z);
+          remoteCar.position.lerp(position, 1 - Math.exp(-12 * dt));
+          remoteCar.rotation.y = Math.atan2(-remoteFrame.tx, -remoteFrame.tz);
+          remoteCar.userData.nitroFlames.forEach((flame, i) => { flame.visible = Boolean(remote.boosting); flame.scale.setScalar(remote.boosting ? 1 + Math.sin(now * 0.04 + i) * 0.15 : 0.001); });
+          remoteCar.userData.wheels.forEach((wheel) => { wheel.rotateY(-Math.max(0, remote.speed || 0) * dt / 0.39); });
+        }
+      } else remoteCar.visible = false;
       if (state.started && raceModeRef.current === 'duo') {
         const size = renderer.getSize(new THREE.Vector2()), halfHeight = size.y / 2;
         camera.aspect = size.x / halfHeight; camera.updateProjectionMatrix();
@@ -656,9 +732,9 @@ export default function RacingGame() {
     const observer = new ResizeObserver(resize); observer.observe(host);
     gameRef.current = {
       pause: () => { if (state.finished) return; state.paused = !state.paused; setPaused(state.paused); },
-      start: () => { state.started = true; setStarted(true); },
+      start: (startAt = 0) => { state.startAt = startAt; state.started = true; setStarted(true); },
       restart: () => {
-        state.angle = 0; state.velocity = 0; state.lane = -1.7; state.laneVelocity = 0; state.elapsed = 0; state.lap = 1; state.lastLap = 0; state.nitro = 100; state.driftScore = 0; state.airtime = 0; state.dashCooldown = 0; state.takeDowns = 0; state.lastTakeDown = -10; state.powerupTimer = 0; state.powerupType = ''; state.powerupToast = ''; state.powerupToastTimer = 0; state.paused = false; state.finished = false;
+        state.startAt = 0; state.angle = 0; state.velocity = 0; state.lane = -1.7; state.laneVelocity = 0; state.elapsed = 0; state.lap = 1; state.lastLap = 0; state.nitro = 100; state.driftScore = 0; state.airtime = 0; state.dashCooldown = 0; state.takeDowns = 0; state.lastTakeDown = -10; state.powerupTimer = 0; state.powerupType = ''; state.powerupToast = ''; state.powerupToastTimer = 0; state.paused = false; state.finished = false;
         state2.angle = 0; state2.velocity = 0; state2.lane = 1.7; state2.laneVelocity = 0; state2.lap = 1; state2.raceLaps = 0; state2.nitro = 100; state2.driftScore = 0; state2.airtime = 0; state2.powerupTimer = 0; state2.powerupType = ''; state2.finished = false;
         pickups.forEach((pickup) => { pickup.active = true; pickup.respawnAt = 0; pickup.group.visible = true; pickup.angle = Math.random() * TAU; pickup.lane = (Math.random() - 0.5) * 7.2; pickup.type = Math.random() < 0.52 ? 'turbo' : 'nitro'; pickup.ring.material = pickupMaterials[pickup.type]; pickup.group.children[1].material = pickupMaterials[pickup.type]; const itemFrame = trackFrame(pickup.angle, pickup.lane, track); pickup.group.position.set(itemFrame.x, 2.15, itemFrame.z); });
         const resetFrame1 = trackFrame(0, -1.7, track), resetFrame2 = trackFrame(0, 1.7, track);
@@ -671,7 +747,7 @@ export default function RacingGame() {
           const frame = trackFrame(rival.angle, rival.lane, track);
           rival.car.position.set(frame.x, 0.05, frame.z);
         });
-        setPowerupToast(''); setFinished(false); setStarted(true); setPaused(false); setLap(1); setTime('00:00.00'); setSpeed(0); setNitro(100); setDriftScore(0); setTakeDowns(0); setTakeDownVisible(false); setPlace(1); setPlace2(2); setSpeed2(0); setLap2(1); setNitro2(100); setWinner(''); setRaceSnapshot([]);
+        remoteStateRef.current = null; state.startAt = 0; setPowerupToast(''); setFinished(false); setStarted(true); setPaused(false); setLap(1); setTime('00:00.00'); setSpeed(0); setNitro(100); setDriftScore(0); setTakeDowns(0); setTakeDownVisible(false); setPlace(1); setPlace2(2); setSpeed2(0); setLap2(1); setNitro2(100); setWinner(''); setRaceSnapshot([]);
       },
     };
     return () => { cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp); renderer.dispose(); host.removeChild(renderer.domElement); scene.traverse((o) => { o.geometry?.dispose(); if (Array.isArray(o.material)) o.material.forEach((m) => { m.map?.dispose(); m.dispose(); }); else { o.material?.map?.dispose(); o.material?.dispose(); } }); };
@@ -712,7 +788,31 @@ export default function RacingGame() {
           <div className="rc-setup-progress"><span>RACE SETUP</span><b>0{setupStep + 1}<i> / 03</i></b><div><i style={{ width: `${(setupStep + 1) * 33.333}%` }} /></div></div>
           {setupStep === 0 && <div className="rc-welcome-content"><span className="rc-welcome-kicker">NEON CIRCUIT PRESENTS</span><h1>SPORTS CAR<br /><b>CHALLENGE</b></h1><p>Take the wheel. Own the circuit.<br />Your race starts here.</p><button className="rc-next-button" onClick={() => goToSetupStep(1)}>NEXT <span>CHOOSE YOUR TRACK</span><b>↗</b></button><small className="rc-enter-hint">OR PRESS ENTER</small></div>}
           {setupStep === 1 && <div className="rc-track-step"><span className="rc-step-kicker">01 &nbsp; / &nbsp; CIRCUIT SELECT</span><h2>Choose your track.</h2><p>Three routes. One starting grid.</p><div className="rc-map-picker" aria-label="Choose a race map">{MAPS.map((map, index) => <button key={map.id} className={`rc-map-option ${selectedMap === map.id ? 'rc-map-selected' : ''}`} onClick={() => setSelectedMap(map.id)} aria-pressed={selectedMap === map.id}><small>0{index + 1} &nbsp; · &nbsp; {map.descriptor}</small><b>{map.name}</b><span>{selectedMap === map.id ? 'SELECTED ✓' : 'SELECT TRACK +'}</span></button>)}</div><div className="rc-setup-actions"><button className="rc-back-button" onClick={() => goToSetupStep(0)}>← BACK</button><button className="rc-next-button" onClick={() => goToSetupStep(2)}>NEXT <span>DRIVER SETUP</span><b>↗</b></button></div><small className="rc-enter-hint">PRESS ENTER TO CONTINUE</small></div>}
-          {setupStep === 2 && <div className="rc-driver-step"><span className="rc-step-kicker">02 &nbsp; / &nbsp; GRID SETUP</span><h2>Choose your race.</h2><p>{selectedTrack.name} · 5 competitive rivals</p><div className="rc-mode-picker" role="group" aria-label="Choose number of players"><button className={raceMode === 'solo' ? 'rc-mode-option rc-mode-selected' : 'rc-mode-option'} onClick={() => selectRaceMode('solo')} aria-pressed={raceMode === 'solo'}><b>1P</b><span>SOLO RACE</span><small>Race against the rivals</small></button><button className={raceMode === 'duo' ? 'rc-mode-option rc-mode-selected' : 'rc-mode-option'} onClick={() => selectRaceMode('duo')} aria-pressed={raceMode === 'duo'}><b>2P</b><span>SPLIT SCREEN</span><small>Race side by side</small></button></div><div className="rc-driver-cards"><article><span>P1</span><b>PLAYER ONE</b><small>W A S D &nbsp; · &nbsp; SHIFT NITRO<br />SPACE + STEER TO DRIFT</small></article>{raceMode === 'duo' ? <article><span>P2</span><b>PLAYER TWO</b><small>ARROW KEYS &nbsp; · &nbsp; RIGHT SHIFT<br />ENTER + STEER TO DRIFT</small></article> : <article className="rc-rival-card"><span>05</span><b>RIVAL DRIVERS</b><small>FULL SPEED AI<br />NITRO + DASH TAKEDOWNS</small></article>}</div><div className="rc-race-rules"><span>03 LAPS</span><i /><span>{raceMode === 'duo' ? '07 RACERS' : '06 RACERS'}</span><i /><span>NITRO + DASH</span></div><div className="rc-setup-actions"><button className="rc-back-button" onClick={() => goToSetupStep(1)}>← BACK</button><button className="rc-next-button rc-start-button" onClick={() => gameRef.current?.start()}>START {raceMode === 'duo' ? '2P RACE' : 'SOLO RACE'} <span>{selectedTrack.name.toUpperCase()}</span><b>↗</b></button></div><small className="rc-enter-hint">PRESS ENTER TO START</small></div>}
+          {setupStep === 2 && <div className="rc-driver-step"><span className="rc-step-kicker">02 &nbsp; / &nbsp; GRID SETUP</span><h2>{raceMode === 'online' ? 'Race a friend.' : 'Choose your race.'}</h2><p>{selectedTrack.name} · 5 competitive rivals</p>
+            <div className="rc-mode-picker" role="group" aria-label="Choose race mode">
+              <button className={raceMode === 'solo' ? 'rc-mode-option rc-mode-selected' : 'rc-mode-option'} onClick={() => selectRaceMode('solo')} aria-pressed={raceMode === 'solo'}><b>1P</b><span>SOLO RACE</span><small>Race against the rivals</small></button>
+              <button className={raceMode === 'duo' ? 'rc-mode-option rc-mode-selected' : 'rc-mode-option'} onClick={() => selectRaceMode('duo')} aria-pressed={raceMode === 'duo'}><b>2P</b><span>SPLIT SCREEN</span><small>Two drivers, one device</small></button>
+              <button className={raceMode === 'online' ? 'rc-mode-option rc-mode-selected' : 'rc-mode-option'} onClick={() => selectRaceMode('online')} aria-pressed={raceMode === 'online'}><b>◎</b><span>ONLINE RACE</span><small>Invite a friend by code</small></button>
+            </div>
+            {raceMode === 'online' ? <section className="rc-online-lobby" aria-label="Online race room">
+              <label className="rc-online-name">DRIVER NAME<input maxLength={18} value={roomName} onChange={(event) => setRoomName(event.target.value)} placeholder="DRIVER" disabled={Boolean(room)} /></label>
+              {!room ? <>
+                <button className="rc-online-action" onClick={() => connectRoom('host')} disabled={onlineBusy || !onlineConfigured}>{onlineBusy ? 'CONNECTING…' : 'CREATE INVITE ROOM'} <b>↗</b></button>
+                <div className="rc-online-join"><input aria-label="Room code" maxLength={7} value={roomCodeInput} onChange={(event) => setRoomCodeInput(normalizeRoomCode(event.target.value))} placeholder="7-CHARACTER CODE" /><button onClick={() => connectRoom('guest')} disabled={onlineBusy || !onlineConfigured || roomCodeInput.length !== 7}>JOIN</button></div>
+                {!onlineConfigured && <small className="rc-online-note">ONLINE SERVICE SETUP IS REQUIRED BEFORE ROOMS CAN OPEN.</small>}
+              </> : <>
+                <div className="rc-room-code"><span>ROOM CODE</span><b>{room.code}</b><button onClick={() => navigator.clipboard?.writeText(room.code)}>COPY</button></div>
+                <div className="rc-room-players">{onlinePlayers.map((player) => <div key={player.id}><i className={player.ready ? 'rc-player-ready' : ''} /><span>{player.name}{player.role === 'host' ? ' · HOST' : ''}</span><b>{player.ready ? 'READY' : 'WAITING'}</b></div>)}</div>
+                <small className="rc-online-note" role="status">{onlineMessage || (room.role === 'host' ? 'WAITING FOR A FRIEND TO JOIN' : 'READY WHEN YOU ARE')}</small>
+                {room.role === 'host' && <button className="rc-online-action" onClick={startOnlineRace} disabled={onlinePlayers.length < 2 || onlinePlayers.some((player) => !player.ready)}>START ONLINE RACE <b>↗</b></button>}
+                {room.role === 'guest' && !onlineReady && <button className="rc-online-action" onClick={async () => { try { await roomRef.current?.setReady(true); setOnlineReady(true); setOnlineMessage('READY — WAITING FOR HOST'); } catch { setOnlineMessage('COULD NOT UPDATE READY STATUS. TRY AGAIN.'); } }}>I’M READY <b>✓</b></button>}
+                <button className="rc-online-leave" onClick={leaveRoom}>LEAVE ROOM</button>
+              </>}
+              {onlineMessage && !room && <small className="rc-online-note" role="status">{onlineMessage}</small>}
+            </section> : <div className="rc-driver-cards"><article><span>P1</span><b>PLAYER ONE</b><small>W A S D &nbsp; · &nbsp; SHIFT NITRO<br />SPACE + STEER TO DRIFT</small></article>{raceMode === 'duo' ? <article><span>P2</span><b>PLAYER TWO</b><small>ARROW KEYS &nbsp; · &nbsp; RIGHT SHIFT<br />ENTER + STEER TO DRIFT</small></article> : <article className="rc-rival-card"><span>05</span><b>RIVAL DRIVERS</b><small>FULL SPEED AI<br />NITRO + DASH TAKEDOWNS</small></article>}</div>}
+            <div className="rc-race-rules"><span>03 LAPS</span><i /><span>{raceMode === 'online' || raceMode === 'duo' ? '07 RACERS' : '06 RACERS'}</span><i /><span>NITRO + DASH</span></div>
+            <div className="rc-setup-actions"><button className="rc-back-button" onClick={() => goToSetupStep(1)}>← BACK</button>{raceMode !== 'online' && <button className="rc-next-button rc-start-button" onClick={() => gameRef.current?.start()}>START {raceMode === 'duo' ? '2P RACE' : 'SOLO RACE'} <span>{selectedTrack.name.toUpperCase()}</span><b>↗</b></button>}</div>
+            <small className="rc-enter-hint">{raceMode === 'online' ? 'SHARE A ROOM CODE AND RACE ONLINE' : 'PRESS ENTER TO START'}</small></div>}
         </section>}
         {started && <section className="rc-hud" aria-label="Race telemetry">
           <div className="rc-hud-corner"><span className="rc-eyebrow">PLAYER 1 · POSITION</span><div className="rc-position">{String(place).padStart(2, '0')}<small> / {String(fieldSize).padStart(2, '0')}</small></div></div>
